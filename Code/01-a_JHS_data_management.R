@@ -1,135 +1,161 @@
 
-rm(list=ls())
-
-mutate_cond <- function(.data, condition, ..., envir = parent.frame()) {
-  condition <- eval(substitute(condition), .data, envir)
-  .data[condition, ] <- .data[condition, ] %>% mutate(...)
-  .data
-}
-
-# echa.sas7bdat
-# lvedd, pwt, swt 
-# for m-mode, ECHA43, ECHA45, ECHA41  
-# for 2D,     ECHA52, ECHA54, ECHA50
-
-echo<-haven::read_sas("Datasets/JHS/echa.sas7bdat")%>%
-  set_names(tolower(names(.)))%>%
-  mutate(lvm_2d=0.8*(1.04*(((echa50/10)+(echa52/10)+(echa54/10))^3-(echa52/10)^3))+0.6,
-         lvm_mm=0.8*(1.04*(((echa41/10)+(echa43/10)+(echa45/10))^3-(echa43/10)^3))+0.6)%>%
-  dplyr::select(subjid,lvm_2d)%>%
-  na.omit()
 
 library(tidyverse)
 library(magrittr)
+library(haven)
+library(splines)
 
-is.between <- function(x, a, b) {
-  (x - a)  *  (b - x) > 0
-}
-
-anly = read.csv('Datasets/JHS/JHS_baseline_visit.csv',
-                stringsAsFactors=FALSE)%>%
-  mutate(bsa=sqrt((height*weight)/3600))%>%
-  dplyr::filter(subjid%in%echo$subjid)%>%
-  merge(echo,by='subjid')%>%
-  mutate(lvm=lvm_2d/bsa,
-         lvh=ifelse((sex=='Male' & lvm > 115) | 
-                    (sex=='Female' & lvm > 95), 1, 0),
-         race=1, study=1) %>%
-  dplyr::select(subjid,lvm,lvh,sex,cln_sbp=sbp,cln_dbp=dbp,
-                age,alc,currentSmoker,diab=Diabetes,
-                edu=edu3cat,race,study)
-
-for(i in names(anly)){
-  if(is.character(anly[[i]])){
-    anly[[i]][anly[[i]]%in%c('',' ')]=NA
-    anly[[i]]%<>%factor()
-  } 
-}
-
-levels(anly$edu)<-list(
-  '1'="High school graduate/GED",
-  '1'="Less than high school",
-  '2'="Attended vocational school, trade school, or college"
+data_file_path <- file.path(
+  "..",
+  "..",
+  "Datasets"
 )
-
-levels(anly$currentSmoker)<-list('1'='No','2'='Yes')
-levels(anly$diab)<-list('1'='No','2'='Yes')
-levels(anly$sex)<-list('1'='Female','2'='Male')
-
-anly%<>%mutate(alc=as.numeric(alc),
-               currentSmoker=as.numeric(currentSmoker),
-               diab=as.numeric(diab),
-               edu=as.numeric(edu),
-               sex=as.numeric(sex))
-
 
 labs=nobs=list()
 labs[[1]]="JHS participants"
-nobs[[1]]=nrow(anly)
-exc=y30_exc=list(labs=labs,nobs=nobs)
+nobs[[1]]=5306
+exc=list(labs=labs,nobs=nobs)
 
 exc$labs[[2]]="Participants who underwent 24-hour ABPM"
 exc$nobs[[2]]=1148
 
-exc$labs[[3]]<-
+
+jhs_abpm_long <- file.path(
+  data_file_path,
+  "JHS ABPM",
+  "long",
+  "jhs_abpm_long_27FEB2019.csv") %>%
+  read_csv() %>%
+  dplyr::filter(sr_journal_provided == 1) %>% # 1015
+  dplyr::select(
+    -ppr,
+    -hr, 
+    -sr_journal_provided,
+    -tsw, 
+    -dt, 
+    -nt
+  ) %>%
+  group_by(subjid) %>% 
+  mutate(
+    asleep_1_to_5 = all(awake[time>=1 & time<=5]==0),
+    nreadings_awk = sum(awake==1),
+    nreadings_slp = sum(awake==0),
+    slp_sbp = mean(sbp[awake==0]),
+    slp_dbp = mean(dbp[awake==0])
+  ) 
+
+exc$labs[[3]] = "Participants who reported times of falling asleep and waking"
+exc$nobs[[3]] = length(unique(jhs_abpm_long$subjid))
+
+jhs_abpm_long %<>% 
+  dplyr::filter(
+    nreadings_awk >=10,
+    nreadings_slp >= 5
+  )
+
+exc$labs[[4]] <-
   "Participants with \u2265 10 awake and \u2265 5 asleep BP measurements."
-exc$nobs[[3]]=1046
+exc$nobs[[4]] = length(unique(jhs_abpm_long$subjid))
 
-exc$labs[[4]]="Participants who provided asleep and awake times"
-exc$nobs[[4]]=943
-
-abpm = read.csv("Datasets/JHS/JHS_abpm_943_long.csv") %>% 
-  dplyr::select(-tsw,-hour,-minute,-nt,-ends_with('_cal'),
-                -time_seconds_since_midnight)%>%
-  mutate(nht=ifelse(slp_sbp>=120 | slp_dbp>=70,1,0),
-         slp_dur=NA) %>%
-  mutate_cond(time_awake<=time_asleep&!is.na(time_awake)&!is.na(time_asleep), 
-              slp_dur=(24-time_asleep)+time_awake) %>%
-  mutate_cond(time_awake>time_asleep&!is.na(time_awake)&!is.na(time_asleep), 
-              slp_dur=time_awake-time_asleep)%>%
-  left_join(anly,by='subjid')%>%
-  plyr::ddply(.variables = 'subjid',.fun=function(blk){
-    if(any(blk$awake[blk$time%>%is.between(1,5)]==1)){
-      #cat(blk$subjid[1]); 
-      return(NULL)
-    } else {
-      return(blk)
-    }
-  })%>% 
-  dplyr::rename(tsm=time)%>%
-  dplyr::select(-ppr,-hr,-slp_state)
+jhs_abpm_long %<>% 
+  dplyr::filter(
+    asleep_1_to_5 == 1
+  ) %>% 
+  dplyr::select(
+    -starts_with("nread"), 
+    -asleep_1_to_5
+  )
 
 exc$labs[[5]]="Participants who were asleep during sampling times (1am-5am)"
-exc$nobs[[5]]=length(unique(abpm$subjid))
+exc$nobs[[5]]=length(unique(jhs_abpm_long$subjid))
 
-abpm%<>%mutate_if(is.factor,as.numeric)
 
-library(lme4)
-library(splines)
-set.seed(329)
+# Pseudo asleep BP means --------------------------------------------------
 
-lmm<-lme4::lmer(sbp~bs(tsm,4)+(bs(tsm,4)||subjid),data=abpm)
-abpm$sbp_imp<-predict(lmm)+rnorm(nrow(abpm),mean=0,sd=sigma(lmm))
 
-lmm<-lme4::lmer(dbp~bs(tsm,4)+(bs(tsm,4)||subjid),data=abpm)
-abpm$dbp_imp<-predict(lmm)+rnorm(nrow(abpm),mean=0,sd=sigma(lmm))
+lmm <- lme4::lmer(
+  sbp~bs(time,4)+(bs(time,4)||subjid),
+  data=jhs_abpm_long
+)
 
-abpm%<>%group_by(subjid)%>%
-  mutate(slp_sbp_imp=mean(sbp_imp[awake==0]),
-         slp_dbp_imp=mean(dbp_imp[awake==0]))
+jhs_abpm_long$sbp_imp <- predict(lmm) %>% 
+  add(
+    rnorm(
+      length(.),
+      mean=0,
+      sd=sigma(lmm)
+    )
+  )
 
-abpm_smry<-abpm%>%ungroup()%>%
-  dplyr::select(subjid,slp_sbp,slp_sbp_imp,slp_dbp,slp_dbp_imp,awk_sbp,
-                awk_dbp,slp_dur,nht)%>%unique()%>%
-  mutate(subjid=as.character(subjid))
+lmm <- lme4::lmer(
+  dbp~bs(time,4)+(bs(time,4)||subjid),
+  data=jhs_abpm_long
+)
 
-anly%<>%dplyr::filter(subjid%in%abpm$subjid)%>%
-  merge(abpm_smry,by='subjid')%>%
-  mutate(subjid=as.character(subjid))
+jhs_abpm_long$dbp_imp <- predict(lmm) %>% 
+  add(
+    rnorm(
+      length(.),
+      mean=0,
+      sd=sigma(lmm)
+    )
+  )
 
-saveRDS(abpm,'Datasets/JHS_abpm.RDS')
-saveRDS(anly,'Datasets/JHS_anly.RDS')
+jhs_vis1 <- file.path(
+  data_file_path,
+  "JHS_analysis",
+  "Processed data",
+  "jhs_visit1.csv") %>%
+  read_csv() %>% 
+  dplyr::filter(
+    subjid %in% jhs_abpm_long$subjid
+  ) %>% 
+  mutate(race='Black') %>% 
+  dplyr::select(
+    subjid,
+    age,
+    sex,
+    race,
+    edu=edu3cat,
+    diabetes,
+    alc,
+    currentsmoker,
+    bpmeds,
+    cln_sbp=sbp,
+    cln_dbp=dbp,
+    lvm,
+    lvh,
+    acr=albumin_creatinine_ratio
+  ) 
+
+jhs_abpm_means <- file.path(
+  data_file_path,
+  "JHS ABPM",
+  "means",
+  "jhs_abpm_means_27FEB2019.csv"
+) %>%
+  read_csv() %>%
+  dplyr::filter(subjid %in% jhs_abpm_long$subjid) %>% 
+  dplyr::select(
+    -c(
+      starts_with("dt"),
+      starts_with("nt"),
+      starts_with("nread")
+    )
+  ) %>% 
+  group_by(subjid) %>%
+  mutate(nht=ifelse(slp_sbp>=120 | slp_dbp>=70,1,0))
+
+analysis <- dplyr::left_join(
+  jhs_vis1,
+  jhs_abpm_means,
+  by='subjid'
+)
+
+saveRDS(jhs_abpm_long,'Datasets/JHS_abpm_long.RDS')
+saveRDS(analysis,'Datasets/JHS_analysis.RDS')
 saveRDS(exc ,'Datasets/JHS_excl.RDS')
+
 
 
 

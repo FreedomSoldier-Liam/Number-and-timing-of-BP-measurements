@@ -1,37 +1,3 @@
-rm(list=ls())
-
-theme_Publication <- function(base_size=16) {
-  
-  require(ggthemes)
-  
-  (theme_foundation(base_size=base_size)+ 
-      theme(plot.title = element_text(face = "bold",
-                                      size = rel(1), hjust = 0.5),
-            text = element_text(),
-            panel.background = element_rect(colour = NA),
-            plot.background = element_rect(fill = "transparent",colour = NA),
-            panel.border = element_rect(colour = 'black'),
-            legend.key.size = unit(3,"line"),
-            legend.key.height = unit(3,"line"),
-            axis.title = element_text(face = "bold",size = rel(1)),
-            axis.title.y = element_text(angle=90,vjust =2),
-            axis.title.x = element_text(vjust = -0.2),
-            axis.text = element_text(size=rel(1)),
-            axis.line = element_blank(), # element_line(colour="black"),
-            axis.ticks = element_line(),
-            panel.grid.major = element_blank(), #element_line(colour="#f0f0f0"),
-            panel.grid.minor = element_blank(),
-            legend.key = element_rect(colour = NA),
-            legend.position = "bottom",
-            legend.direction = "horizontal",
-            legend.title = element_text(face="italic"),
-            legend.text = element_text(size=rel(1)),
-            plot.margin=unit(c(10,5,5,5),"mm"),
-            strip.background=element_rect(colour="black",fill="#f0f0f0"),
-            strip.text = element_text(face="bold")
-      ))
-  
-}
 mae<-function(x,y) mean(abs(x-y),na.rm=TRUE)
 
 library(tidyverse)
@@ -39,15 +5,29 @@ library(magrittr)
 library(fmsb)
 library(BlandAltmanLeh)
 
-## Distributed protocol times
+files <- list.files(path='Code/abp_sampling_functions',all.files=TRUE, 
+  full.names=TRUE, pattern='.R')
 
+for(f in files) source(f)
+
+
+## Distributed protocol times
 lwr_time=1
 upr_time=5
 ntimes=list(2,3,4)
 
-distr=map(ntimes, ~combn(lwr_time:upr_time,.))%>%
-  map(.f=function(mat){map(1:ncol(mat),~mat[,.])})%>%
-  set_names(paste("msr",ntimes,'times',sep='_'))
+distr = map(
+  ntimes, ~combn(lwr_time:upr_time,.)
+) %>%
+  map(
+    .f=function(mat){
+      map(1:ncol(mat),~mat[,.]
+      )
+    }
+  ) %>%
+  set_names(
+    paste("msr",ntimes,'times',sep='_')
+  )
 
 cnctr=list(
   JHS=list(
@@ -81,130 +61,78 @@ cnctr=list(
 )
 
 inputs=expand.grid(
-  data_lab=c("CARDIA","JHS"),
+  data_lab=c("JHS","CARDIA"),
   impute=c(FALSE,TRUE),
   strata=c("overall",'sex','race'),
   tvarbl=c('tss','tsm'),
   stringsAsFactors = FALSE
 )
 
-take_out=which(inputs$strata=='race'&inputs$data_lab=='JHS')
+take_out=which(inputs$strata=='race' & inputs$data_lab=='JHS')
 inputs=inputs[-take_out,]
 
-i=1
+means_data <- 
+  list(
+    JHS=readRDS("Datasets/JHS_analysis.RDS"),
+    CARDIA=readRDS("Datasets/CARDIA_analysis.RDS")
+  ) %>% 
+  map(
+    ~{
+      dplyr::select(.x, subjid, starts_with("slp_"), nht) %>% 
+        dplyr::mutate(subjid = as.character(subjid))
+    }
+  )
 
 for(i in 1:nrow(inputs)){
   
   input=inputs[i,]
   
-  analysis=readRDS(paste0("Datasets/",input$data_lab,"_abpm.RDS"))
-  analysis$time=analysis[[input$tvarbl]]
+  abpm_long <- readRDS(
+    paste0("Datasets/",input$data_lab,"_abpm_long.RDS")
+  )
   
   if(input$impute){
-    analysis%<>%dplyr::mutate(sbp=sbp_imp,dbp=dbp_imp)
+    abpm_long%<>%dplyr::mutate(sbp=sbp_imp,dbp=dbp_imp)
   }
   
-  # blk=analysis[analysis$subjid==analysis$subjid[1],]
-  # times=distr[[1]][[2]]
-  # impute=T
-  
-  sampler<-function(blk,times,impute=F){
-    
-    indx<-map_int(times,~which.min(abs(blk$time-.)))
-    
-    if(any(blk$time[indx]-times>1.5)){
-      print(blk$subjid[1])
-      return(NULL)
-    } else {
-      blk[indx,]
-    }
-    
-  }
-  
-  # dblk=analysis
-  # proto=cnctr$msr_3_times
-  
-  summarizer<-function(proto,dblk){
-    
-    map(proto,.f=function(t){
-      
-      smp=dblk%>%
-        plyr::ddply('subjid',sampler,times=t,input$impute)%>%
-        group_by(subjid)%>%
-        dplyr::summarise(slp_sbp_est=mean(sbp),
-                         slp_dbp_est=mean(dbp),
-                         slp_sbp=slp_sbp[1],
-                         slp_dbp=slp_dbp[1],
-                         nht=nht[1])%>%
-        mutate(nht2=ifelse(slp_sbp_est>=120|slp_dbp_est>=70,1,0))
-      
-      tlab=paste(t,collapse='_')
-      tlab=gsub('.','deci',tlab,fixed = TRUE)
-      fname=paste0(paste(input,collapse='_'),"_",tlab,".RDS")
-      saveRDS(smp,file.path('Results','Full Results',fname))
-      
-      # p.sbp=bland.altman.plot(smp$slp_sbp_est,smp$slp_sbp,
-      #                         graph.sys="ggplot2")+
-      #   theme_Publication()+
-      #   labs(x='Mean of measurements',
-      #        y="Difference in measurements",
-      #        title='Systolic blood pressure')
-      # 
-      # p.dbp=bland.altman.plot(smp$slp_dbp_est,smp$slp_dbp,
-      #                         graph.sys="ggplot2")+
-      #   theme_Publication()+
-      #   labs(x='Mean of measurements',
-      #        y="Difference in measurements",
-      #        title='Diastolic blood pressure')
-      # 
-      # p.all=cowplot::plot_grid(p.sbp,p.dbp,nrow=1)
-      
-      data.frame(
-        sbp=mae(smp$slp_sbp_est,smp$slp_sbp),
-        dbp=mae(smp$slp_dbp_est,smp$slp_dbp),
-        #lvm=cor(smp$slp_sbp_est,smp$lvm),
-        agr=mean(smp$nht==smp$nht2),
-        nht=Kappa.test(x=smp$nht,y=smp$nht2)$Result$estimate,
-        lab=paste(t,collapse='-')
-      )
-      
-    }) %>% 
-      reduce(rbind)
-    
-  }
-  
-  polisher<-function(dblk){
-    
-    list(
-      
-      distr=map(distr, .f=summarizer,dblk)%>%
-        reduce(rbind),
-      
-      cnctr=map(list(cnctr[[input$data_lab]]),.f=summarizer,dblk)
-      
-    ) %>%
-      map2(names(.),.f=function(res,proto){
-        res%>%data.frame()%>%
-          mutate(lab=as.character(lab),proto=proto)})%>%
-      reduce(rbind)
-    
-  }
+  protocols <- list(
+    distributed  = distr,
+    concentrated = cnctr
+  )
   
   if(input$strata=='overall'){
-    results=polisher(analysis)
+    
+    results <- protocols %>% 
+      map(
+        .f = summarizer,
+        data = abpm_long,
+        input = input,
+        truth = means_data[[input$data_lab]]
+      ) %>% 
+      bind_rows(.id='protocol')
+    
   } else {
-    data_blocks<-analysis%>%split(f=.[[input$strata]])
-    results=map(data_blocks,.f=polisher)%>% 
-      map2(names(.),.f=function(dblk,dlab){
-        dblk%>%mutate(facet_var=dlab)
-      })%>%
-      reduce(rbind)
+    
+    results <- abpm_long %>% 
+      split(f = .[[input$strata]]) %>% 
+      map(
+        ~protocols %>% 
+          map(
+            .f=summarizer,
+            data = .x, 
+            input = input, 
+            truth = means_data[[input$data_lab]]
+          ) %>% 
+          bind_rows(.id='protocol')
+      ) %>% 
+      bind_rows(.id=input$strata)
+    
   }
   
-  results %>% 
-    dplyr::mutate(proto=factor(proto,levels=c("cnctr","distr"),
-                               labels=c("Concentrated","Distributed")))%>%
-    saveRDS(paste0('Results/results_',paste(input,collapse='_'),'.RDS'))
+  saveRDS(
+    results,
+    paste0('Results/results_',paste(input,collapse='_'),'.RDS')
+  )
   
   
 }

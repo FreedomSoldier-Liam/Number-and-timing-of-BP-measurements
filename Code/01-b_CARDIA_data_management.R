@@ -1,181 +1,240 @@
-rm(list=ls())
 
-mutate_cond <- function(.data, condition, ..., envir = parent.frame()) {
-  condition <- eval(substitute(condition), .data, envir)
-  .data[condition, ] <- .data[condition, ] %>% mutate(...)
-  .data
-}
 library(tidyverse)
 library(haven)
 library(lubridate)
 library(magrittr)
 
-is.between <- function(x, a, b) {
-  (x - a)  *  (b - x) > 0
-}
 
-echo<-read_sas("Datasets/CARDIA/cardia_echo.sas7bdat")%>%
-  dplyr::select(id=ID,lvmass2d=ILVMASS2D)%>%
-  dplyr::mutate(id=substr(id,0,5),id=as.numeric(id))
-
-demo<- haven::read_sas('Datasets/CARDIA/cardia_abpm_781_updated.sas7bdat')%>%
-  set_names(tolower(names(.)))%>%
-  mutate(edu=cut(educ,breaks = c(0,12,Inf),labels=c(1,2)),
-         edu=as.numeric(edu),
-         diabetes=diabetes+1,
-         currentSmoker=ifelse(smoke==0,2,1),
-         alc=ifelse(alcohol==2,1,2))%>%
-  dplyr::select(id=short_id, age, sex=sex_cat, race=race_cat, 
-                height_cm, weight_lbs,edu,diab=diabetes,alc,
-                currentSmoker,edu,cln_sbp=c_sbp,cln_dbp=c_dbp)%>%
-  data.frame()
-
-# location to read in data
-schwartz_abpm_loc=file.path('O:','REGARDS','CARDIA','Data',
-                            'Population','ABPM_Schwartz')
-
-uab_slp=read_sas(file.path(
-  schwartz_abpm_loc,'final_summary_dataset_uab_v1.sas7bdat'))
-nw_slp<-read_sas(file.path(
-  schwartz_abpm_loc,'final_summary_dataset_nw_v1.sas7bdat'))
-
-slp=rbind(uab_slp,nw_slp)%>%
-  mutate(slp_dur=as.numeric(sleep_duration)/60^2)%>%
-  dplyr::select(id,slp_dur)
-
-demo%<>%
-  left_join(slp,by='id')%>%
-  left_join(echo,by='id')%>%
-  mutate(weight_kg=weight_lbs/2.20462,
-         bsa=sqrt((height_cm*weight_kg)/3600),
-         lvm=lvmass2d/bsa,
-         lvh=ifelse((sex==2 & lvm > 115) | 
-                      (sex==1 & lvm > 95), 1, 0),
-         study=2) %>%
-  dplyr::select(-lvmass2d,-height_cm,-weight_lbs,-weight_kg,-bsa)
-
-demo$sex[demo$sex==0]=2
-demo$race[demo$race==0]=2
-
-abpm<-read_sas("Datasets/CARDIA/spacelabs_abp2_edited.sas7bdat")%>%
-  set_names(tolower(names(.)))%>%
-  data.frame()
-
-abpm$period[abpm$period=='WU']='SL'
-
-suppressWarnings(
-  abpm%<>%dplyr::filter(period%in%c("AW","SL"),
-                        valid_reading==1,
-                        manual_reading==0)%>%
-    dplyr::select(id,time=tim,period,sbp=sysbp,dbp=diabp)%>%
-    mutate(time=as.numeric(hms(time))/(60^2))%>%
-    group_by(id)%>%
-    mutate(nawake=sum(period=="AW"),
-           nasleep=sum(period=='SL'),
-           awk_sbp=mean(sbp[period=='AW']),
-           slp_sbp=mean(sbp[period=='SL']),
-           awk_dbp=mean(dbp[period=='AW']),
-           slp_dbp=mean(dbp[period=='SL']),
-           nht=ifelse(slp_sbp>=120 | slp_dbp>=70,1,0),
-           period=factor(period))%>%
-    dplyr::filter(nawake>10,nasleep>5)%>%
-    group_by(id,period)%>%
-    mutate(tss=time-min(time))%>%
-    mutate_cond(period=="AW",tss=0)%>%
-    ungroup()%>%
-    mutate(id=as.character(id),
-           awake=ifelse(period=='AW',1,0))%>%  
-    plyr::ddply(.variables = 'id',.fun=function(blk){
-      if(any(blk$awake[blk$time%>%is.between(1,5)]==1)){
-        return(NULL)
-      } else {
-        return(blk)
-      }
-    })
+files <- list.files(
+  path='Code/abp_sampling_functions/',
+  all.files=TRUE, 
+  full.names=TRUE, pattern='.R'
 )
 
-abpm$tss[abpm$awake==1]=NA
+for(f in files) source(f)
 
-#View(abpm[abpm$id==abpm$id[which.max(abpm$tss)],])
-
-abpm$time[abpm$time>=24]%<>%subtract(24)
-abpm$time[abpm$time>=24]%<>%subtract(24)
-
-ids_to_filter=abpm$id[(abpm$period=='AW'&is.between(abpm$time,1,5))]
-ids_to_filter_counts=table(ids_to_filter)
-ids_to_filter=names(ids_to_filter_counts)[ids_to_filter_counts>1]
+data_file_path <- file.path(
+  "..",
+  "..",
+  "Datasets"
+)
 
 
-abpm%<>%dplyr::filter(!(id%in%ids_to_filter))%>%
-  mutate(id=as.numeric(id))%>%
-  merge(demo,by='id')%>%
-  dplyr::rename(subjid=id,tsm=time)
+
+labs=nobs = list()
+labs[[1]] = "CARDIA participants"
+nobs[[1]] = 5115
+exc       = list(labs=labs,nobs=nobs)
+
+cardia_abpm_means <- file.path(
+  data_file_path,
+  "CARDIA ABPM",
+  "Year 30",
+  "CARDIA_ABPM_Y30_means.csv"
+) %>% 
+  read_csv() %>% 
+  dplyr::filter(
+    nreadings_asleep >= 5
+  )
+
+cardia_abpm_long <- file.path(
+  data_file_path,
+  "CARDIA ABPM",
+  "Year 30",
+  "CARDIA_ABPM_Y30_long.csv"
+) %>% 
+  read_csv() %>% 
+  set_names(
+    tolower(names(.))
+  ) %>% 
+  dplyr::select(
+    -c(
+      center,
+      order,
+      hr,
+      daytime,
+      nighttime
+    )
+  ) %>% 
+  dplyr::rename(tsm = time) %>% 
+  dplyr::arrange(sid, tsm)
+
+exc$labs[[2]]="Participants who underwent 24-hour ABPM"
+exc$nobs[[2]]=length(unique(cardia_abpm_long$sid))
+
+cardia_abpm_long %<>% 
+  dplyr::filter(sid %in% cardia_abpm_means$sid) 
+
+exc$labs[[3]]<-
+  "Participants with \u2265 5 asleep BP measurements."
+exc$nobs[[3]]=length(unique(cardia_abpm_long$sid))
+
+cardia_abpm_long %<>% 
+  group_by(sid) %>% 
+  mutate(
+    asleep_1_to_5 = all(period[tsm>=1 & tsm<=5]%in%c("SL","WU"))
+  ) %>%
+  dplyr::filter(
+    asleep_1_to_5 == TRUE,
+    period %in% c("AW","SL")
+  ) %>%
+  group_by(sid, period) %>% 
+  mutate(
+    tss = tsm - tsm[1]
+  ) %>% 
+  ungroup() %>% 
+  mutate(
+    tss = case_when(
+      period == 'AW' ~ 0,
+      tss < 0 ~ tss + 24,
+      TRUE ~ tss
+    )
+  )
+
+exc$labs[[4]]="Participants who were asleep during sampling times (1am-5am)"
+exc$nobs[[4]]=length(unique(cardia_abpm_long$sid))
+
+valid_samples <- cardia_abpm_long %>% 
+  group_by(sid) %>% 
+  nest() %>% 
+  mutate(
+    abp_tsm_valid = map_lgl(
+      data, 
+      .f=abp_sampler, 
+      times=seq(from = 1, to = 5, by = 1/2), 
+      time_variable = 'tsm', 
+      quality_check=TRUE
+    ),
+    abp_tss_valid = map_lgl(
+      data, 
+      .f = abp_sampler, 
+      times = seq(from = 1, to = 5, by = 1/2),
+      time_variable = 'tss',
+      quality_check = TRUE
+    )
+  ) %>% 
+  dplyr::filter(
+    abp_tsm_valid==TRUE,
+    abp_tss_valid==TRUE
+  ) %>% 
+  pluck('sid')
+
+cardia_abpm_long %<>% 
+  dplyr::filter(
+    sid %in% valid_samples
+  )
+
+exc$labs[[5]]="Participants who had a BP reading within 30 minutes of all sampling times"
+exc$nobs[[5]]=length(unique(cardia_abpm_long$sid))
 
 set.seed(329)
 
-lmm<-lme4::lmer(sbp~bs(tsm,4)+(bs(tsm,4)||subjid),data=abpm)
-abpm$sbp_imp<-predict(lmm)+rnorm(nrow(abpm),mean=0,sd=sigma(lmm))
+lmm<-lme4::lmer(
+  sbp~bs(tsm)+(bs(tsm)|sid),
+  data=cardia_abpm_long
+)
 
-lmm<-lme4::lmer(dbp~bs(tsm,4)+(bs(tsm,4)||subjid),data=abpm)
-abpm$dbp_imp<-predict(lmm)+rnorm(nrow(abpm),mean=0,sd=sigma(lmm))
+cardia_abpm_long$sbp_imp <- predict(lmm) %>% 
+  add(
+    rnorm(
+      length(.),
+      mean=0,
+      sd=sigma(lmm)
+    )
+  )
 
-abpm%<>%group_by(subjid)%>%
-  mutate(slp_sbp_imp=mean(sbp_imp[awake==0]),
-         slp_dbp_imp=mean(dbp_imp[awake==0]))
+lmm <- lme4::lmer(
+  dbp~bs(tsm)+(bs(tsm)|sid),
+  data=cardia_abpm_long
+)
 
+cardia_abpm_long$dbp_imp <- predict(lmm) %>% 
+  add(
+    rnorm(
+      length(.),
+      mean=0,
+      sd=sigma(lmm)
+    )
+  )
 
-labs=nobs=list()
-labs[[1]]="CARDIA participants"
-nobs[[1]]=5115
-exc=y30_exc=list(labs=labs,nobs=nobs)
+cardia_abpm_long %<>% 
+  dplyr::select(
+    subjid = sid, 
+    sbp,
+    sbp_imp,
+    dbp, 
+    dbp_imp,
+    tss,
+    tsm
+  )
 
-exc$labs[[2]]="Participants who underwent 24-hour ABPM"
-exc$nobs[[2]]=825
+echo <- file.path(
+  data_file_path, 
+  'CARDIA_analysis',
+  'CARDIA_ECHO_Y30.csv'
+) %>%
+  read_csv() 
 
-exc$labs[[3]]<-
-  "Participants with \u2265 10 awake and \u2265 5 asleep BP measurements."
-exc$nobs[[3]]=781
+cardia_y30 <- file.path(
+  data_file_path,
+  "CARDIA_analysis",
+  "cardia_analysis_all_visits.csv"
+) %>%
+  read_csv() %>% 
+  dplyr::filter(
+    exam == 30,
+    sid %in% cardia_abpm_long$subjid
+  ) %>% 
+  left_join(echo, by = 'sid') %>% 
+  left_join(cardia_abpm_means, by = 'sid') %>% 
+  dplyr::select(
+    subjid = sid,
+    age,
+    sex,
+    race,
+    edu = educ,
+    diabetes=diab,
+    currentsmoker = smoke,
+    bpmeds = bpmeds,
+    cln_sbp = sbp,
+    cln_dbp = dbp,
+    lvm = lvm_bsa,
+    lvh = lvh_bsa,
+    acr,
+    slp_sbp,
+    slp_dbp,
+    awk_sbp,
+    awk_dbp,
+    sleep_duration
+  ) %>% 
+  mutate(
+    nht=ifelse(slp_sbp>=120 | slp_dbp>=70,1,0),
+    currentsmoker = case_when(
+      currentsmoker %in% c('Never','Former') ~ "No",
+      currentsmoker =='Current' ~ "Yes"
+    ),
+    subjid = as.character(subjid)
+  ) %>% 
+  dplyr::filter(
+    sleep_duration >= 5
+  )
 
-exc$labs[[4]]="Participants who provided asleep and awake times"
-exc$nobs[[4]]=781
+exc$labs[[6]]="Participants who slept for \u2265 5 hours"
+exc$nobs[[6]]=nrow(cardia_y30)
 
-exc$labs[[5]]="Participants who were asleep during sampling times (1am-5am)"
-exc$nobs[[5]]=length(unique(abpm$subjid))
+cardia_abpm_long %<>% 
+  ungroup() %>% 
+  mutate(
+    subjid=as.character(subjid)
+  ) %>% 
+  dplyr::filter(
+    subjid %in% cardia_y30$subjid
+  ) %>% 
+  left_join(
+    cardia_y30[,c("subjid","race","sex")],
+    by = 'subjid'
+  )
 
-abpm%<>%dplyr::select(subjid,tsm,tss,awake,sbp,dbp,slp_sbp,slp_dbp,
-                      awk_sbp,awk_dbp,nht,lvm,lvh,sex,age,alc,
-                      slp_sbp_imp,slp_dbp_imp,sbp_imp,dbp_imp,
-                      currentSmoker,diab,edu,race,study)
-
-mvars=c("subjid","slp_sbp","slp_dbp","awk_sbp","awk_dbp","nht",
-        "slp_sbp_imp","slp_dbp_imp")
-
-demo%<>%dplyr::rename(subjid=id)%>%
-  mutate(subjid=as.numeric(subjid))%>%
-  right_join(unique(abpm[,mvars]),by='subjid')%>%
-  dplyr::select(subjid,lvm,lvh,sex,age,alc,currentSmoker,slp_dur,
-                diab,edu,race,study,slp_sbp,slp_dbp,
-                slp_sbp_imp,slp_dbp_imp,
-                awk_sbp,awk_dbp,nht,cln_sbp,cln_dbp)
-
-saveRDS(abpm,'Datasets/CARDIA_abpm.RDS')
-saveRDS(demo,'Datasets/CARDIA_anly.RDS')
-saveRDS(exc,'Datasets/CARDIA_exc.RDS')
-
-# write.csv(abpm,"../Change in ABPM over 25 years/Clean Data/CARDIA_abpm_y30.csv")
-## Quality control
-# jo_means=read_sas("Datasets/CARDIA/y30_abpm_means.sas7bdat")%>%
-#   dplyr::filter(GE_5_Valid_sleep==1,GE_10_Valid_awake==1)%>%
-#   dplyr::select(id,mn_sysbp_AW,mn_sysbp_SL,mn_diabp_AW,mn_diabp_SL,
-#                 time_asleep=Sleep_Time,time_awake=Wakeup_Time)%>%
-#   mutate(time_asleep=as.numeric(hms(time_asleep))/(60^2),
-#          time_awake=as.numeric(hms(time_awake))/(60^2))
-# 
-# my_means=unique(abpm[,c("id","awk_sbp","slp_sbp")])
-# 
-# (my_means$slp_sbp-jo_means$mn_sysbp_SL)%>%sort(decreasing = T)%>%
-#   magrittr::extract(1)
-# 
-# id_for_inspect=jo_means$id[which.max(my_means$slp_sbp-jo_means$mn_sysbp_SL)]
-# 
-# abpm[abpm$id==id_for_inspect,]%>%data.frame()
+saveRDS(cardia_abpm_long,'Datasets/CARDIA_abpm_long.RDS')
+saveRDS(cardia_y30,'Datasets/CARDIA_analysis.RDS')
+saveRDS(exc ,'Datasets/CARDIA_excl.RDS')

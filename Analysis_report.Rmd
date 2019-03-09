@@ -1,0 +1,169 @@
+---
+title: "Number and Timing of ABP measurements - Results"
+author: "Byron Jaeger"
+date: "March 9, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+params=list(
+  impute=TRUE,
+  strata='overall',
+  time_variable='tss'
+)
+
+knitr::opts_chunk$set(echo = FALSE)
+
+library(kableExtra)
+library(tidyverse)
+library(magrittr)
+library(gt)
+
+files <- list.files(path='Code/KableWon',all.files=TRUE, 
+                    full.names=TRUE, pattern='.R')
+
+for(f in files) source(f)
+
+```
+
+## Exclusion cascades
+
+```{r, fig.height=6, fig.with=10, fig.cap='ABPM = ambulatory blood pressure monitoring, BP = blood pressure, JHS = Jackson Heart Study'}
+
+jhs_exc <- readRDS('Datasets/JHS_excl.RDS')
+cardia_exc <- readRDS('Datasets/CARDIA_excl.RDS')
+
+plot_exclusion_cascade(
+  nobs = jhs_exc$nobs,
+  labs = jhs_exc$labs,
+  txt_expand = 1
+  )
+
+```
+
+```{r, fig.height=6, fig.with=10, fig.cap='Coronary Artery Risk Development in Young Adults study participants'}
+
+plot_exclusion_cascade(
+  nobs = cardia_exc$nobs,
+  labs = cardia_exc$labs,
+  txt_expand = 1
+  )
+
+```
+
+
+## Table 1
+```{r, results='asis'}
+
+source("Code/02-a_Analysis_Participant_Characteristics.R")
+
+```
+
+# Table 2
+
+```{r}
+
+files <- list.files(
+  path      = 'Results',
+  all.files = TRUE,
+  full.names= TRUE, 
+  pattern   = paste(
+    params$impute,
+    params$strata,
+    params$time_variable,
+    sep='_'
+  )
+)
+
+jhs_indx <- map_lgl(files, grepl, pattern='JHS', fixed=T)
+cardia_indx <- map_lgl(files, grepl, pattern='CARDIA', fixed=T)
+
+names(files)[jhs_indx] <- 'JHS'
+names(files)[cardia_indx] <- 'CARDIA'
+
+results <- map(files, readRDS) %>% 
+  bind_rows(.id='dataset')
+
+results  %>% 
+  group_by(dataset, protocol) %>% 
+  nest() %>% 
+  mutate(
+    data = map(
+      data, .f=function(data_block){
+        data_block %>% 
+          dplyr::arrange(desc(nht_kappa)) %>% 
+          .[1:5,]
+      }
+    )
+  ) %>% 
+  unnest() %>% 
+  mutate_if(is.numeric, adapt_round) %>% 
+  dplyr::select(
+    dataset, protocol,
+    `Sampling protocol` = label,
+    `Mean absolute error_Asleep Systolic BP` = sbp_mae,
+    `Mean absolute error_Asleep Diastolic BP` = dbp_mae,
+    `Nocturnal hypertension_Classification accuracy` = nht_classif,
+    `Nocturnal hypertension_Kappa statistic` = nht_kappa
+  ) %>% 
+  group_by(dataset, protocol) %>% 
+  gt::gt(
+    stub_group.sep = ", "
+  ) %>% 
+  gt::tab_header(
+    title = 'Mean absolute error and classification accuracy of different sampling protocols.'
+  ) %>% 
+  gt::cols_split_delim(
+    delim = '_',
+    columns = c(
+      'Mean absolute error_Asleep Systolic BP',
+      'Mean absolute error_Asleep Diastolic BP'
+    )
+  ) %>% 
+  gt::cols_split_delim(
+    delim = '_',
+    columns = c(
+      'Nocturnal hypertension_Classification accuracy',
+      'Nocturnal hypertension_Kappa statistic'
+    )
+  ) %>% 
+  gt::cols_align(
+    columns = c(
+      'Mean absolute error_Asleep Systolic BP',
+      'Mean absolute error_Asleep Diastolic BP',
+      'Nocturnal hypertension_Classification accuracy',
+      'Nocturnal hypertension_Kappa statistic'
+    ),
+    align = 'center'
+  ) %>% 
+  gt::tab_footnote(
+    footnote = c(
+      "Distributed protocol: A number of blood pressure measurements are taken between 1am and 5am, with at least 1 hour between each measurement",
+      "Concentrated protocol: A number of blood pressure measurements are taken sequentially, with at most 30 minutes between each measurement, starting somewhere between 1am and 4am"
+    ),
+    locations = cells_column_labels(
+      columns = c(
+        'Sampling protocol'
+      )
+    )
+  ) %>% 
+  gt::tab_footnote(
+    footnote = ifelse(
+      params$impute==TRUE,
+      "Ambulatory blood pressure measurements were adjusted by a suitable error term to account for oversampling.",
+      "Ambulatory blood pressure measurements were not adjusted prior to sampling"
+    ),
+    locations = cells_title(groups='title')
+  ) %>% 
+  gt::tab_footnote(
+    footnote = ifelse(
+      params$time_variable=='tss',
+      "blood pressure measurements were taken relative to the time that participants fell asleep",
+      "blood pressure measurements were taken relative to time since midnight"
+    ),
+    locations = cells_title(groups='title')
+  )
+
+```
+

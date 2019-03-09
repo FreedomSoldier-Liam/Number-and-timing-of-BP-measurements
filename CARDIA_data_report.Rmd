@@ -1,0 +1,93 @@
+---
+title: "Number and timing of measurements needed to estimate blood pressure during sleep"
+author: "Byron Jaeger"
+date: "February 28, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(haven)
+library(lubridate)
+library(magrittr)
+
+data_file_path <- file.path(
+  "..",
+  "..",
+  "Datasets"
+)
+
+```
+
+### Data processing - Coronary Artery Risk Development in Young Adults (CARDIA) study
+
+This document contains all of the data steps taken for participants in The Coronary Artery Risk Development in Young Adults (CARDIA) study. In the code below, the data are read and several filtering rules are applied to remove a subset of rows from the data.
+
+```{r}
+
+cardia_abpm_long <- file.path(
+  data_file_path,
+  "CARDIA ABPM",
+  "spacelabs_abp2_edited.sas7bdat"
+) %>% 
+  # the pipe operator, %>%, is a way to send one object
+  # forward into a new process. For example, 
+  # x %>%  mean() is the same thing as mean(x)
+  # read the file into R
+  read_sas() %>% 
+  # set all column names to be lower case
+  set_names(
+    tolower(names(.))
+  )
+
+# here are the number of unique participant IDs in the dataset
+length(unique(cardia_abpm_long$id))
+
+```
+
+**Joe**, I see that John's paper included 825 participants from the CARDIA ABPM ancillary study. **Can you remind me why there are six additional participants in this data set?** 
+
+```{r}
+
+cardia_abpm_long = cardia_abpm_long %>% 
+  # filter out rows with the following rules
+  dplyr::filter(
+    period%in%c("AW","SL"), # keep rows that are awake or asleep
+    valid_reading==1, # keep rows that are valid readings
+    manual_reading==0 # keep rows that are not manual readings
+  ) 
+
+# here are the number of unique participant IDs in the dataset
+# this is just to verify that no participants had their data
+# completely removed by filtering out the noisy rows
+length(unique(cardia_abpm_long$id))
+
+```
+
+Next, filter out participants who did not provide $\geq 10$ readings while awake and $\geq 5$ readings while asleep. 
+
+```{r}
+
+cardia_abpm_long = cardia_abpm_long %>% 
+  # group the data by id so that operations 
+  # that follow will be done specifically for each person
+  group_by(id) %>% 
+  # create new columns in the data
+  mutate(
+    nawake=sum(period=="AW"), # no. of awake readings
+    nasleep=sum(period=='SL'), # no. of asleep readings
+  ) %>%
+  # keep only participants who had >=10 and >=5 awake and asleep readings
+  dplyr::filter(
+    nawake  >= 10,
+    nasleep >= 5
+  )
+
+# here are the number of unique participant IDs in the dataset
+length(unique(cardia_abpm_long$id))
+
+```
+
+John included 781 participants in his analysis with $\geq 10$ readings while awake and $\geq 5$ readings while asleep. **It seems that there are 6 additional participants in my data** and it also seems that they had a good number of blood pressure measurements. **Can you let me know your thoughts on this?**

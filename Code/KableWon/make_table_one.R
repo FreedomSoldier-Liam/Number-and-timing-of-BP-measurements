@@ -165,11 +165,11 @@ make_table_one <- function(meta, time=NULL,
         add_footnote(tbl_one$notes,notation='symbol',threeparttable=T)
     )
     
-    for(i in 1:length(group_labels)){
-      kab %<>% group_rows(group_label = group_labels[i],
-                          start_row = breaks[i]+1,
-                          end_row = breaks[i+1])
-    }
+    # for(i in 1:length(group_labels)){
+    #   kab %<>% group_rows(group_label = group_labels[i],
+    #                       start_row = breaks[i]+1,
+    #                       end_row = breaks[i+1])
+    # }
     
     tbl_one=kab
     

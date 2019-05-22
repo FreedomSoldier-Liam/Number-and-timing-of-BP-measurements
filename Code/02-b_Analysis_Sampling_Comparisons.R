@@ -1,3 +1,4 @@
+
 mae<-function(x,y) mean(abs(x-y),na.rm=TRUE)
 
 library(tidyverse)
@@ -5,8 +6,13 @@ library(magrittr)
 library(fmsb)
 library(BlandAltmanLeh)
 
-files <- list.files(path='Code/abp_sampling_functions',all.files=TRUE, 
-  full.names=TRUE, pattern='.R')
+files <-
+  list.files(
+    path = 'Code/abp_sampling_functions',
+    all.files = TRUE,
+    full.names = TRUE,
+    pattern = '.R'
+  )
 
 for(f in files) source(f)
 
@@ -83,6 +89,8 @@ means_data <-
     }
   )
 
+# i=4
+
 for(i in 1:nrow(inputs)){
   
   input=inputs[i,]
@@ -90,10 +98,6 @@ for(i in 1:nrow(inputs)){
   abpm_long <- readRDS(
     paste0("Datasets/",input$data_lab,"_abpm_long.RDS")
   )
-  
-  if(input$impute){
-    abpm_long%<>%dplyr::mutate(sbp=sbp_imp,dbp=dbp_imp)
-  }
   
   protocols <- list(
     distributed  = distr,
@@ -128,6 +132,21 @@ for(i in 1:nrow(inputs)){
       bind_rows(.id=input$strata)
     
   }
+  
+  results %<>% 
+    mutate(
+      sbp_mae_lwr = sbp_mae_est + qnorm(0.025) * sqrt(sbp_mae_var),
+      sbp_mae_upr = sbp_mae_est + qnorm(0.975) * sqrt(sbp_mae_var),
+      dbp_mae_lwr = dbp_mae_est + qnorm(0.025) * sqrt(dbp_mae_var),
+      dbp_mae_upr = dbp_mae_est + qnorm(0.975) * sqrt(dbp_mae_var),
+      nht_classif_lwr = nht_classif_est + qnorm(0.025) * sqrt(nht_classif_var),
+      nht_classif_upr = nht_classif_est + qnorm(0.975) * sqrt(nht_classif_var),
+      nht_kappa_lwr = nht_kappa_est + qnorm(0.025) * sqrt(nht_kappa_var),
+      nht_kappa_upr = nht_kappa_est + qnorm(0.975) * sqrt(nht_kappa_var)
+    ) %>% 
+    dplyr::select(
+      -ends_with("_var")
+    )
   
   saveRDS(
     results,

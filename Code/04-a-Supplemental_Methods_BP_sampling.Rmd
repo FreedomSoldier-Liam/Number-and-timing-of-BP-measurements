@@ -1,0 +1,142 @@
+---
+title: "Measurement of ambulatory BP at night"
+author: "Byron Jaeger"
+date: "March 19, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  fig.width=12,
+  fig.height=8
+)
+
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(kableExtra)
+  library(geepack)
+  library(gghighlight)
+  library(ggforce)
+})
+
+```
+
+## This document
+
+The purpose of this document is to illustrate the method I have applied to sample blood pressure (BP) during nighttime hours (1-5am) or sleeping hours (1-5 hours after falling asleep).
+
+### Import ambulatory BP monitoring (ABPM) data.
+
+Here is a random subsample of the ABPM data
+
+```{r}
+
+abpm <- readRDS('Datasets/JHS_abpm_long.RDS') %>% 
+  dplyr::select(subjid, time_since_12am=tsm, sbp, dbp)
+
+print(abpm[,-1])
+
+```
+
+### A set of systolic BP (SBP) measurements from one participant
+
+```{r}
+
+data = abpm %>%
+  dplyr::filter(subjid == 'J543687') 
+
+p1 = data %>% 
+  ggplot(
+    aes(x=time_since_12am,y=sbp)
+  ) +
+  geom_point(size=3) +
+  labs(
+    y = "Systolic blood pressure, mm Hg",
+    x = "Time since midnight, hours"
+  ) 
+
+print(p1)
+
+```
+
+### Points we want to sample (1, 2, 3, and 4am)
+
+```{r, fig.height=12}
+
+times <- c(1, 2, 3, 4)
+indx <- map_int(
+  times, .f=function(sample_time){
+    which.min(
+      abs(data$time_since_12am-sample_time)
+    )
+  } 
+)
+
+highlight <- rep(FALSE, nrow(data))
+highlight[indx] <- TRUE
+
+p2 = p1 + 
+  gghighlight(highlight) +
+  scale_x_continuous(breaks = 0:5) +
+  facet_zoom(x = time_since_12am < 5.2)
+
+print(p2)
+
+```
+
+### The problem with sampling these points directly
+
+1. Overly optimistic agreement with mean SBP during sleep using the full ABPM recording
+
+2. Answers the following question: "How much do these 4 ABPM measures agree with the 4+X ABPM measures that were taken during this person's nighttime period?" (Here, X is some number greater than 1. Also, this isn't what we want to answer)
+
+### A proposed solution
+
+1. Estimate latent SBP trajectory using linear mixed models (diastolic BP as well, but this document focuses on SBP).
+2. Sample from the latent SBP trajectory + random error 
+3. Replicate sampling procedure 10 times
+4. Conduct analysis using each sample, separately.
+5. Pool results using Rubin's rules
+
+### Estimated latent SBP trajectory
+
+```{r, fig.height=12}
+
+mdl <- lm(sbp~poly(time_since_12am,5),data=data)
+line_data <- tibble(time_since_12am=seq(0,24,length.out=1000)) %>% 
+  mutate(sbp=predict(mdl,newdata = .))
+
+p2 + 
+  geom_line(data=line_data,size=1)
+
+```
+
+### One set of `imputed' SBP values (blue points)
+
+What we really want to answer is the following question: "How many SBP measurements are needed, and when should those measurements be taken, in order to estimate mean sleep SBP accurately?" 
+
+This question could be answered by conducting nighttime ABPM and then home BP monitoring (HBPM) on sequential nights for each participant, and then comparing the difference in the estimated mean SBP between the two methods.
+
+We only have the ABPM data, so we have to simulate what the HBPM data! Naturally, there is a fair amount of uncertainty in our predicted HBPM values. Therefore, we replicated our entire analysis 10 times and pooled the results using Rubin's rules. 
+
+The figure below gives an illustration of one set of imputed values for one participant and one sampling protocol
+
+```{r, fig.height=12}
+
+set.seed(329)
+
+point_data <- tibble(time_since_12am=times) %>% 
+  mutate(
+    # estimated bp trajectory
+    sbp=predict(mdl,newdata = .) +
+      # added white noise based on model estimated error
+      rnorm(nrow(.),sd = sigma(mdl))
+  )
+
+p2 + 
+  geom_line(data=line_data)+
+  geom_point(data=point_data,col='blue', size=5)
+
+```
+

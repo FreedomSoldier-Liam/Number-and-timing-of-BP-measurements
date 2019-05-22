@@ -1,0 +1,368 @@
+---
+title: "Correlation comparison"
+author: "Byron Jaeger"
+date: "March 17, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(kableExtra)
+  library(geepack)
+})
+
+files <- list.files(
+  path = 'Code/KableWon',
+  all.files = TRUE,
+  full.names = TRUE,
+  pattern = '.R'
+)
+
+for(f in files) source(f)
+
+files <- list.files(
+  path='Code/abp_sampling_functions',
+  all.files=TRUE, 
+  full.names=TRUE, 
+  pattern='.R'
+)
+
+for(f in files) source(f)
+
+```
+
+## This document
+
+The purpose of this document is to illustrate the method I have applied to compare the associations between left ventricular hypertropy and nocturnal hypertension when (1) a full set of $\geq 5$ blood pressure measurements are used to estimate mean blood pressure during sleep, and (2) a set of $<$ 5 blood pressure measurements are used to estimate mean blood pressure during sleep.
+
+### Part 1
+
+Set a couple of control variables for poisson regression models: 
+
+```{r cars}
+
+control <- c(
+  'age',
+  'sex',
+  'edu',
+  'diabetes',
+  'currentsmoker',
+  'bpmeds',
+  'slp_duration'
+)
+
+```
+
+Import a dataset with information on left-ventricular hypertrophy status and mean blood pressure during sleep according to a full set of $\geq 5$ blood pressure measurements. 
+
+```{r}
+
+analysis <- file.path(
+  "Datasets", "JHS_analysis.RDS"
+) %>% 
+  readRDS() %>% 
+  dplyr::select(
+    subjid, # subject id, 
+    lvm,    # left-ventricular mass indexed to height
+    lvh,    # left-ventricular hypertrophy
+    acr,    # albumin-to-creatinine ratio
+    albuminuria, # acr > 30
+    slp_sbp,# true sleep sbp
+    slp_dbp,# true sleep dbp
+    !!control # control variables (see above chunk)
+  )
+
+print(analysis)
+
+```
+
+
+Import a dataset that contains blood pressure measurements taken at 1, 2, 3, and 4 AM from participants in the Jackson Heart Study. 
+
+```{r}
+
+model_df <- file.path(
+  "Results",
+  "Full Results",
+  "JHS_FALSE_overall_tsm_1_2_3_4.RDS"
+) %>% 
+  readRDS() %>% 
+  dplyr::select(
+    subjid, # subject id
+    tsm,    # time since midnight, hours
+    sbp,    # systolic blood pressure
+    dbp     # diastolic blood pressure
+  ) %>% 
+  group_by(subjid)
+
+print(model_df)
+
+```
+
+
+```{r}
+
+model_df <- model_df %>% 
+  dplyr::summarize(
+    slp_sbp_est=mean(sbp),
+    slp_dbp_est=mean(dbp)
+  ) %>% 
+  # merge these estimates with full analysis data
+  left_join(analysis, by = 'subjid') %>% 
+  # remove missing values 
+  # this is not done in the paper, but
+  # it is done here to keep things simple
+  na.omit() 
+
+print(model_df)
+
+```
+
+As a quick tangent, note the correlation between estimated nocturnal SBP and SBP and true nocturnal SBP and DBP
+
+```{r}
+
+library(ggcorrplot)
+
+corr_vars <- c(
+  "slp_sbp_est",
+  "slp_dbp_est",
+  "slp_sbp",
+  "slp_dbp",
+  "lvm",
+  "acr"
+)
+
+corr <- cor(model_df[,corr_vars])
+
+ggcorrplot(
+  corr,
+  hc.order = TRUE,
+  type = 'lower',
+  outline.col = "white",
+  lab = TRUE
+  ) + 
+  theme(
+    panel.grid = element_blank()
+  )
+
+
+```
+
+
+### Part 2
+
+Fit regression models for LVH
+
+```{r}
+
+m1 = model_df %>%
+  dplyr::mutate(
+    slp_sbp=slp_sbp / 10,
+    slp_dbp=slp_dbp / 10
+    ) %>% 
+  geepack::geeglm(
+    formula = lvh ~ slp_sbp + slp_dbp + age + sex + edu + 
+      diabetes + currentsmoker + bpmeds + slp_duration,
+    family = 'poisson',
+    id = 1:nrow(.),
+    data = .
+  )
+
+m2 = model_df %>%
+  dplyr::mutate(
+    slp_sbp_est = slp_sbp_est / 10,
+    slp_dbp_est = slp_dbp_est / 10
+    ) %>% 
+  geepack::geeglm(
+    formula = lvh ~ slp_sbp_est + slp_dbp_est + age + sex + edu + 
+      diabetes + currentsmoker + bpmeds + slp_duration,
+    family = 'poisson',
+    id = 1:nrow(.),
+    data = .
+  )
+
+estimates <- list(
+  m1, m2
+) %>% 
+  map(
+    broom::tidy
+  ) %>% 
+  bind_rows(
+    .id='model'
+  ) %>% 
+  dplyr::filter(
+    grepl(pattern='slp_sbp', x=term)
+  ) %>% 
+  mutate(
+    pr_est = exp(estimate),
+    pr_lwr = exp(estimate - 1.96*std.error),
+    pr_upr = exp(estimate + 1.96*std.error)
+  )
+
+print(estimates)
+
+```
+
+The effects appear to be almost identical. Here is the same analysis, using albuminuria
+
+```{r}
+
+# model 1 includes all variables except for nht_est
+# i.e., model 1 estimates PR for true nht
+m1 = model_df %>%
+  dplyr::mutate(
+    slp_sbp=slp_sbp / 10,
+    slp_dbp=slp_dbp / 10
+  ) %>% 
+  geepack::geeglm(
+    formula = albuminuria ~ slp_sbp + slp_dbp + age + sex + edu + 
+      diabetes + currentsmoker + bpmeds + slp_duration,
+    family = 'poisson',
+    id = 1:nrow(.),
+    data = .
+  )
+
+# model 2 includes all variables except for nht
+# i.e., model 1 estimates PR for estimated nht
+m2 = model_df %>%
+  dplyr::mutate(
+    slp_sbp_est = slp_sbp_est / 10,
+    slp_dbp_est = slp_dbp_est / 10
+  ) %>% 
+  geepack::geeglm(
+    formula = albuminuria ~ slp_sbp_est + slp_dbp_est + age + sex + edu + 
+      diabetes + currentsmoker + bpmeds + slp_duration,
+    family = 'poisson',
+    id = 1:nrow(.),
+    data = .
+  )
+
+estimates <- list(
+  m1, m2
+) %>% 
+  map(
+    broom::tidy
+  ) %>% 
+  bind_rows(
+    .id='model'
+  ) %>% 
+  dplyr::filter(
+    grepl(pattern='slp_sbp', x=term)
+  ) %>% 
+  mutate(
+    pr_est = exp(estimate),
+    pr_lwr = exp(estimate - 1.96*std.error),
+    pr_upr = exp(estimate + 1.96*std.error)
+  )
+
+print(estimates)
+
+```
+
+## Part 3
+
+Bootstrap the difference in prevalence ratios. The code is omitted because it is just a loop of the code above.
+
+```{r, echo = FALSE}
+
+
+estimate_difference <- function(data, outcome, compare, control)
+{
+  
+  # n <- nrow(data)
+  # boot_indx <- sample(n, replace=TRUE)
+  
+  model_formulas <- map(
+    compare, .f=function(.variable){
+      as.formula(
+        paste(
+          outcome, '~', .variable, '+', paste(control, collapse=' + ')
+        ) 
+      )
+    }
+  )
+  
+  model_estimates <- map2_dfr(
+    model_formulas, compare, .f=function(.formula,.variable){
+      geepack::geeglm(
+        formula = .formula,
+        family = 'poisson',
+        id = 1:nrow(data),
+        data = data
+      ) %>% 
+        broom::tidy() %>% 
+        dplyr::filter(term==.variable)
+    }
+  )
+  
+  model_estimates %>% 
+    pluck("estimate") %>% 
+    diff()
+}
+
+set.seed(32989)
+library(bcaboot)
+
+results <- c("lvh","albuminuria") %>% 
+  set_names(paste(.)) %>% 
+  map(
+    .f=function(.outcome){
+      bcajack(
+        x = model_df, 
+        B = nrow(model_df), 
+        func = estimate_difference, 
+        verbose = FALSE,
+        compare = c("slp_sbp","slp_sbp_est"),
+        outcome = .outcome,
+        control = control
+      )
+    }
+  )
+
+```
+
+```{r}
+
+results$lvh$lims %>% 
+  as_tibble(rownames = 'bca_pct') %>% 
+  dplyr::select(
+    BCA = bca, 
+    `BCA percentile` = bca_pct,
+    standard = std,
+    `standard percentile` = pct
+  ) %>% 
+  kable(
+    caption = 'Bias corrected accelerated (BCA) and standard bootstrap distributions for the difference in association with left-ventricular hypertrophy between estimated and true nocturnal systolic blood pressure.',
+    digits=3,
+    align = 'c'
+  ) %>% 
+  kable_styling()
+
+```
+
+The first column shows the estimated bias-corrected accelerated (BCA) confidence limits at the requested alpha percentiles which can be compared with the standard limits $\theta \pm \hat{\sigma} \cdot z_\alpha$ under the column titled standard.  The percentile column gives percentiles of the ordered `r n_boots` bootstrap replications corresponding to the Bca limits, e.g. the 0.502 percentile equals the .500 Bca limit: -0.713.
+
+```{r}
+
+results$albuminuria$lims %>% 
+  as_tibble(rownames = 'bca_pct') %>% 
+  dplyr::select(
+    BCA = bca, 
+    `BCA percentile` = bca_pct,
+    standard = std,
+    `standard percentile` = pct
+  ) %>% 
+  kable(
+    caption = 'Bias corrected accelerated (BCA) and standard bootstrap distributions for the difference in association with albuminuria between estimated and true nocturnal systolic blood pressure.',
+    digits=3,
+    align = 'c'
+  ) %>% 
+  kable_styling()
+
+
+```
+

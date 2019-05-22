@@ -1,0 +1,354 @@
+---
+title: "Prevalence ratio comparison"
+author: "Byron Jaeger"
+date: "March 17, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(kableExtra)
+  library(geepack)
+})
+
+files <- list.files(
+  path = 'Code/KableWon',
+  all.files = TRUE,
+  full.names = TRUE,
+  pattern = '.R'
+)
+
+for(f in files) source(f)
+
+files <- list.files(
+  path='Code/abp_sampling_functions',
+  all.files=TRUE, 
+  full.names=TRUE, 
+  pattern='.R'
+)
+
+for(f in files) source(f)
+
+```
+
+## This document
+
+The purpose of this document is to illustrate the method I have applied to compare the associations between left ventricular hypertropy and nocturnal hypertension when (1) a full set of $\geq 5$ blood pressure measurements are used to estimate mean blood pressure during sleep, and (2) a set of $<$ 5 blood pressure measurements are used to estimate mean blood pressure during sleep.
+
+### Part 1
+
+Set a couple of control variables for poisson regression models: 
+
+```{r cars}
+
+control <- c(
+  'age',
+  'sex',
+  'edu',
+  'diabetes',
+  'currentsmoker',
+  'bpmeds',
+  'sleep_duration'
+)
+
+```
+
+Import a dataset with information on left-ventricular hypertrophy status and mean blood pressure during sleep according to a full set of $\geq 5$ blood pressure measurements. 
+
+```{r}
+
+analysis <- file.path(
+  "Datasets", "JHS_analysis.RDS"
+) %>% 
+  readRDS() %>% 
+  dplyr::select(
+    subjid,      # subject id, 
+    lvh,         # left-ventricular hypertrophy
+    albuminuria, # acr > 30
+    nht,         # nocturnal hypertension (true)
+    control      # control variables (see above chunk)
+    )
+
+print(analysis)
+
+```
+
+
+Import a dataset that contains blood pressure measurements taken at 1, 2, 3, and 4 AM from participants in the Jackson Heart Study. 
+
+```{r}
+
+model_df <- file.path(
+  "Results",
+  "Full Results",
+  "JHS_FALSE_overall_tsm_1_2_3_4.RDS"
+) %>% 
+  readRDS() %>% 
+  dplyr::select(
+    subjid, # subject id
+    tsm,    # time since midnight, hours
+    sbp,    # systolic blood pressure
+    dbp     # diastolic blood pressure
+  ) %>% 
+  group_by(subjid)
+
+print(model_df)
+
+```
+
+
+```{r}
+
+model_df <- model_df %>% 
+  dplyr::summarize(
+    slp_sbp_est=mean(sbp),
+    slp_dbp_est=mean(dbp)
+  ) %>% 
+  mutate(
+    # estimate nocturnal hypertension status based on
+    # systolic/diastolic bp sampled at 1,2,3, and 4am
+    nht_est = ifelse(
+      slp_sbp_est >= 120 | slp_dbp_est >= 70, 1, 0
+    )
+  ) %>% 
+  # merge these estimates with full analysis data
+  left_join(analysis, by = 'subjid') %>% 
+  dplyr::select(
+    -subjid, 
+    -starts_with("slp")
+  ) %>% 
+  # remove missing values 
+  # this is not done in the paper, but
+  # it is done here to keep things simple
+  na.omit() 
+
+print(model_df)
+
+```
+
+As a quick tangent, note the agreement between estimated nocturnal hypertension status and true nocturnal hypertension status
+
+```{r}
+
+t1 = table(
+  `True NHT` = model_df$nht,
+  `Estimated NHT` = model_df$nht_est
+)
+
+print(t1)
+
+```
+
+agreement between estimated and true nocturnal hypertension: `r format(round(100*sum(diag(t1))/sum(t1),2),nsmall=2)`%
+
+### Part 2
+
+Fit regression models for LVH
+
+```{r}
+
+
+# model 1 includes all variables except for nht_est
+# i.e., model 1 estimates PR for true nht
+m1 = model_df %>%
+  geepack::geeglm(
+    formula = lvh ~ .-nht_est-albuminuria,
+    family = 'poisson',
+    id = 1:nrow(.),
+    data = .
+  )
+
+# model 2 includes all variables except for nht
+# i.e., model 1 estimates PR for estimated nht
+m2 = model_df %>%
+  geepack::geeglm(
+    formula = lvh ~ .-nht-albuminuria,
+    family = 'poisson',
+    id = 1:nrow(.),
+    data = .
+  )
+
+estimates <- list(
+  m1, m2
+) %>% 
+  map(
+    broom::tidy
+  ) %>% 
+  bind_rows(
+    .id='model'
+  ) %>% 
+  dplyr::filter(
+    grepl(pattern='nht', x=term)
+  ) %>% 
+  mutate(
+    pr_est = exp(estimate),
+    pr_lwr = exp(estimate - 1.96*std.error),
+    pr_upr = exp(estimate + 1.96*std.error)
+  )
+
+print(estimates)
+
+```
+
+Surprisingly, estimated nocturnal hypertension (sampling BP at 1, 2, 3, and 4am) is more associated with LVH than nocturnal hypertension according to a full ABPM during sleep. Next, fit regression models for albuminuria.
+
+```{r}
+
+# model 1 includes all variables except for nht_est
+# i.e., model 1 estimates PR for true nht
+m1 = model_df %>%
+  geepack::geeglm(
+    formula = albuminuria ~ .-nht_est-lvh,
+    family = 'poisson',
+    id = 1:nrow(.),
+    data = .
+  )
+
+# model 2 includes all variables except for nht
+# i.e., model 1 estimates PR for estimated nht
+m2 = model_df %>%
+  geepack::geeglm(
+    formula = albuminuria ~ .-nht-lvh,
+    family = 'poisson',
+    id = 1:nrow(.),
+    data = .
+  )
+
+estimates <- list(
+  m1, m2
+) %>% 
+  map(
+    broom::tidy
+  ) %>% 
+  bind_rows(
+    .id='model'
+  ) %>% 
+  dplyr::filter(
+    grepl(pattern='nht', x=term)
+  ) %>% 
+  mutate(
+    pr_est = exp(estimate),
+    pr_lwr = exp(estimate - 1.96*std.error),
+    pr_upr = exp(estimate + 1.96*std.error)
+  )
+
+print(estimates)
+
+```
+
+These results indicate that estimated nocturnal hypertension (sampling BP at 1, 2, 3, and 4am) is **much less** associated with LVH versus nocturnal hypertension according to a full ABPM during sleep.
+
+## Part 3
+
+Bootstrap the difference in prevalence ratios. The code is omitted because it is just a loop of the code above.
+
+```{r}
+
+estimate_difference <- function(data, outcome, compare, control)
+{
+  
+  # n <- nrow(data)
+  # boot_indx <- sample(n, replace=TRUE)
+  
+  model_formulas <- map(
+    compare, .f=function(.variable){
+      as.formula(
+        paste(
+          outcome, '~', .variable, '+', paste(control, collapse=' + ')
+        ) 
+      )
+    }
+  )
+  
+  model_estimates <- map2_dfr(
+    model_formulas, compare, .f=function(.formula,.variable){
+      geepack::geeglm(
+        formula = .formula,
+        family = 'poisson',
+        id = 1:nrow(data),
+        data = data
+      ) %>% 
+        broom::tidy() %>% 
+        dplyr::filter(term==.variable)
+    }
+  )
+  
+  model_estimates %>% 
+    pluck("estimate") %>% 
+    diff()
+}
+
+n_boots=100
+set.seed(32989)
+library(bcaboot)
+
+results <- c("lvh","albuminuria") %>% 
+  set_names(paste(.)) %>% 
+  map(
+    .f=function(.outcome){
+      bcajack(
+        x = model_df, 
+        B = n_boots, 
+        func = estimate_difference, 
+        verbose = FALSE,
+        compare = c("nht","nht_est"),
+        outcome = .outcome,
+        control = control
+      )
+    }
+  )
+
+
+```
+
+
+```{r}
+
+results$lvh$lims %>% 
+  as_tibble(rownames = 'bca_pct') %>% 
+  dplyr::select(
+    BCA = bca, 
+    `BCA percentile` = bca_pct,
+    standard = std,
+    `standard percentile` = pct
+  ) %>% 
+  kable(
+    caption = 'Bias corrected accelerated (BCA) and standard bootstrap distributions for the difference in association with left-ventricular hypertrophy between estimated and true nocturnal hypertension status.',
+    digits=3,
+    align = 'c'
+  ) %>% 
+  kable_styling(
+    bootstrap_options = 'striped',
+    full_width = TRUE
+  )
+
+```
+
+The first column shows the estimated bias-corrected accelerated (BCA) confidence limits at the requested alpha percentiles which can be compared with the standard limits $\theta \pm \hat{\sigma} \cdot z_\alpha$ under the column titled standard.  The percentile column gives percentiles of the ordered `r n_boots` bootstrap replications corresponding to the Bca limits, e.g. the 0.502 percentile equals the .500 Bca limit: -0.713.
+
+```{r}
+
+results$albuminuria$lims %>% 
+  as_tibble(rownames = 'bca_pct') %>% 
+  dplyr::select(
+    BCA = bca, 
+    `BCA percentile` = bca_pct,
+    standard = std,
+    `standard percentile` = pct
+  ) %>% 
+  kable(
+    caption = 'Bias corrected accelerated (BCA) and standard bootstrap distributions for the difference in association with albuminuria between estimated and true nocturnal hypertension status.',
+    digits=3,
+    align = 'c'
+  ) %>% 
+  kable_styling(
+    bootstrap_options = 'striped',
+    full_width = TRUE
+  )
+
+
+```
+

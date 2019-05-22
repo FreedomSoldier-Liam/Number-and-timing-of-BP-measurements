@@ -1,0 +1,133 @@
+---
+title: "Number and Timing of ABP measurements - Results"
+author: "Byron Jaeger"
+date: "March 9, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+params=list(
+  impute=TRUE,
+  strata='overall',
+  time_variable='tss'
+)
+
+knitr::opts_chunk$set(echo = FALSE)
+
+library(kableExtra)
+library(tidyverse)
+library(magrittr)
+library(gt)
+library(KableOne)
+
+files <- list.files(
+  path='Code/KableWon',
+  all.files=TRUE, 
+  full.names=TRUE, 
+  pattern='.R'
+)
+
+for(f in files) source(f)
+
+
+files <- list.files(
+  path='Code/abp_sampling_functions',
+  all.files=TRUE, 
+  full.names=TRUE, 
+  pattern='.R'
+)
+
+for(f in files) source(f)
+
+```
+
+## Exclusion cascades
+
+
+```{r}
+
+exc_tables <- map(
+  list(
+    JHS = readRDS('Datasets/JHS_excl.RDS'),
+    CARDIA = readRDS('Datasets/CARDIA_excl.RDS')
+  ), 
+  .f = function(exc){
+    tibble(
+      `Inclusion criteria` = map_chr(exc$labs, ~.),
+      `No. participants included` = map_dbl(exc$nobs, ~.),
+      `No. participants excluded` = c(0, abs(diff(map_dbl(exc$nobs,~.))))
+    ) %>% 
+      kableExtra::kable() %>% 
+      kableExtra::kable_styling(
+        bootstrap_options = c("striped","hover"),
+        full_width = TRUE
+      )
+  }
+)
+
+```
+
+### Jackson Heart Study (JHS)
+
+```{r}
+
+exc_tables$JHS
+
+```
+
+### Coronary Artery Risk Development in Young Adults (CARDIA) study participants
+
+```{r}
+
+exc_tables$CARDIA
+
+```
+
+
+## Table 1
+```{r, results='asis'}
+
+source("Code/02-a_Analysis_Participant_Characteristics.R")
+
+```
+
+# Table 2
+
+```{r, results='asis'}
+
+# part b creates the files that are used in part c
+source("Code/02-c_Analysis_Tabulate_Comparisons.R")
+
+generate_sample_comparison_table(
+  winners = winners$overall,
+  data = results,
+  params = params
+)
+
+```
+
+
+
+# Supplemental Table 1
+
+# Supplemental Table 2
+
+```{r}
+
+generate_sample_comparison_table(
+  winners = winners$bystudy,
+  data = results,
+  params = params
+)
+
+```
+
+
+```{r, eval=FALSE}
+
+
+# part d creates the files that are used in part e
+
+
+```

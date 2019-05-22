@@ -24,3 +24,32 @@ abp_sampler<-function(data, times, time_variable, quality_check=FALSE){
     }
   }
 }
+
+
+boot_vec_mean <- function(x, xname, nboots = 1000, return.ci=FALSE){
+  
+  boot_results <- seq(1, nboots) %>% 
+    map_dbl(
+      ~ mean(x[sample(1:length(x),replace=TRUE)])
+    )
+  
+  if(return.ci){
+    list(
+      median = median(boot_results),
+      mean = mean(boot_results),
+      lower = quantile(boot_results, 0.025, names = FALSE),
+      upper = quantile(boot_results, 0.975, names = FALSE)
+    )
+  } else {
+    
+    list(
+      mean = mean(boot_results),
+      variance = var(boot_results)
+    )
+    
+  }
+  
+  
+}
+
+

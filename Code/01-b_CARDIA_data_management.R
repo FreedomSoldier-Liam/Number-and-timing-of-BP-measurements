@@ -3,7 +3,7 @@ library(tidyverse)
 library(haven)
 library(lubridate)
 library(magrittr)
-
+library(splines)
 
 files <- list.files(
   path='Code/abp_sampling_functions/',
@@ -127,45 +127,52 @@ cardia_abpm_long %<>%
 exc$labs[[5]]="Participants who had a BP reading within 30 minutes of all sampling times"
 exc$nobs[[5]]=length(unique(cardia_abpm_long$sid))
 
+nimpute = 10
 set.seed(329)
 
-lmm<-lme4::lmer(
+lmm <- lme4::lmer(
   sbp~bs(tsm)+(bs(tsm)|sid),
   data=cardia_abpm_long
 )
 
-cardia_abpm_long$sbp_imp <- predict(lmm) %>% 
-  add(
-    rnorm(
-      length(.),
-      mean=0,
-      sd=sigma(lmm)
+for(i in 1:nimpute){
+  cardia_abpm_long[[paste0("sbp_imp_",i)]] <- 
+    predict(lmm) %>% 
+    add(
+      rnorm(
+        length(.),
+        mean=0,
+        sd=sigma(lmm)
+      )
     )
-  )
+}
 
 lmm <- lme4::lmer(
   dbp~bs(tsm)+(bs(tsm)|sid),
   data=cardia_abpm_long
 )
 
-cardia_abpm_long$dbp_imp <- predict(lmm) %>% 
-  add(
-    rnorm(
-      length(.),
-      mean=0,
-      sd=sigma(lmm)
+for(i in 1:nimpute){
+  cardia_abpm_long[[paste0("dbp_imp_",i)]] <- 
+    predict(lmm) %>% 
+    add(
+      rnorm(
+        length(.),
+        mean=0,
+        sd=sigma(lmm)
+      )
     )
-  )
+}
 
 cardia_abpm_long %<>% 
   dplyr::select(
-    subjid = sid, 
-    sbp,
-    sbp_imp,
-    dbp, 
-    dbp_imp,
+    subjid = sid,
+    tsm,
     tss,
-    tsm
+    sbp,
+    dbp,
+    starts_with('sbp_imp'),
+    starts_with('dbp_imp')
   )
 
 echo <- file.path(
@@ -174,6 +181,10 @@ echo <- file.path(
   'CARDIA_ECHO_Y30.csv'
 ) %>%
   read_csv() 
+
+is_01 <- function(x){
+  all(na.omit(x) %in% c(0,1))
+}
 
 cardia_y30 <- file.path(
   data_file_path,
@@ -205,7 +216,7 @@ cardia_y30 <- file.path(
     slp_dbp,
     awk_sbp,
     awk_dbp,
-    sleep_duration
+    slp_duration = sleep_duration
   ) %>% 
   mutate(
     nht=ifelse(slp_sbp>=120 | slp_dbp>=70,1,0),
@@ -213,13 +224,20 @@ cardia_y30 <- file.path(
       currentsmoker %in% c('Never','Former') ~ "No",
       currentsmoker =='Current' ~ "Yes"
     ),
+    albuminuria = ifelse(acr > 30, 1, 0),
+    edu = recode(edu,
+      "College"         = "College graduate",
+      "Graduate School" = "College graduate",
+      "High School"     = "High School graduate/GED",
+      "Jr. High"        = "Less than High School" 
+    ),
     subjid = as.character(subjid)
   ) %>% 
-  dplyr::filter(
-    sleep_duration >= 5
-  )
-
-exc$labs[[6]]="Participants who slept for \u2265 5 hours"
+  dplyr::filter(slp_duration >= 5 & slp_duration < 12) %>% 
+  mutate_if(is_01, factor, labels = c("No","Yes")) %>% 
+  mutate_if(is.factor, as.character)
+  
+exc$labs[[6]]="Participants who slept for \u2265 5 hours and < 12 hours"
 exc$nobs[[6]]=nrow(cardia_y30)
 
 cardia_abpm_long %<>% 
@@ -236,5 +254,5 @@ cardia_abpm_long %<>%
   )
 
 saveRDS(cardia_abpm_long,'Datasets/CARDIA_abpm_long.RDS')
-saveRDS(cardia_y30,'Datasets/CARDIA_analysis.RDS')
+saveRDS(cardia_y30,'Datasets/CARDIA_cleaned.RDS')
 saveRDS(exc ,'Datasets/CARDIA_excl.RDS')
